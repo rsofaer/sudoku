@@ -2,9 +2,14 @@ require 'rubygems'
 require 'pp'
 require 'ruby-debug'
 require 'json'
+require 'perftools'
 class SudokuState
   def initialize rows
+    #@@stop_after_a_while ||= 0
+    @@failures ||= {}
+    @nums_remaining ||= {}
     @rows = rows
+    @cols = []
   end
 
   def row(i)
@@ -12,7 +17,7 @@ class SudokuState
   end
 
   def col(j)
-    @rows.map{|r| r[j-1]}
+    @cols[j] ||= @rows.map{|r| r[j-1]}
   end
 
   def cell(i, j)
@@ -20,6 +25,8 @@ class SudokuState
   end
 
   def set_cell(i, j, n)
+    @nums_remaining = {}
+    @cols[j] = nil
     i = i-1
     j = j-1
     @rows[i][j] = n
@@ -41,11 +48,13 @@ class SudokuState
   end
 
   def nums_remaining(i, j)
-    possibilities = [1,2,3,4,5,6,7,8,9]
-    possibilities = possibilities - row(i)
-    possibilities = possibilities - col(j)
-    possibilities = possibilities - box(i,j)
-    possibilities
+    @nums_remaining[[i,j]] ||= lambda {
+      possibilities = [1,2,3,4,5,6,7,8,9]
+      possibilities = possibilities - row(i)
+      possibilities = possibilities - col(j)
+      possibilities = possibilities - box(i,j)
+      possibilities
+    }.call
   end
 
   def zeros
@@ -60,6 +69,13 @@ class SudokuState
     result
   end
 
+  def inconsistent?
+    return  "inconsistent state" if @@failures[@rows.hash]
+    if zeros.detect{|coords| nums_remaining(coords[0], coords[1]) == 0}
+      @@failures[@rows.hash] = true
+      return "inconsistent state"
+    end
+  end
   def basic_solve
     still_changing = true
     while still_changing
@@ -67,6 +83,7 @@ class SudokuState
       zeros.each do |c|
         possibilities = nums_remaining(c[0],c[1])
         if possibilities.count == 0
+          @@failures[@rows.hash] = true
           return "inconsistent state"
         elsif possibilities.count == 1
           still_changing = true
@@ -74,7 +91,7 @@ class SudokuState
         end
       end
     end
-    @rows
+    self
   end
 
   def solved?
@@ -85,13 +102,29 @@ class SudokuState
     self.class.new JSON.parse(@rows.to_json)
   end
   def spec_solve
+    #@@stop_after_a_while += 1
+    #return if @@stop_after_a_while > 10000
     b_solved = self.clone.basic_solve
-    if b_solved == "inconsistent state"
+    if b_solved == "inconsistent state" || b_solved.inconsistent?
       return "inconsistent state"
     end
-    state = SudokuState.new(b_solved)
-    return state if state.solved?
-    /*
+    return b_solved if b_solved.solved?
+
+    stack = []
+    b_solved.zeros.each do |zero|
+      i = zero[0]
+      j = zero[1]
+
+      v = nums_remaining(i,j)
+      v.each do |num|
+        new_state = self.clone
+        new_state.set_cell(i, j, num)
+        next if new_state.inconsistent?
+        newer_state = new_state.spec_solve
+        return newer_state if newer_state.instance_of?(SudokuState) && newer_state.solved?
+      end
+    end
+=begin
       Let R be the entries in b_solved having two or more possible values
       for each entry e in R
         let V be the possible values for E
@@ -105,7 +138,7 @@ class SudokuState
           pop state
         end
       end
-      */
+=end
   end
 end
 basic_solvable = [[0,0,0, 0,0,0, 0,0,7],
@@ -119,5 +152,25 @@ basic_solvable = [[0,0,0, 0,0,0, 0,0,7],
                   [0,0,0, 7,0,4, 9,0,0],
                   [6,0,0, 0,9,0, 0,0,0],
                   [4,5,9, 0,0,0, 1,0,8]]
+
+adv_solvable =  [[0,3,0, 0,0,0, 0,4,0],
+                 [0,1,0, 0,9,7, 0,5,0],
+                 [0,0,2, 5,0,8, 6,0,0],
+
+                 [0,0,3, 0,0,0, 8,0,0],
+                 [9,0,0, 0,0,4, 3,0,0],
+                 [0,0,7, 6,0,0, 0,0,4],
+
+                 [0,0,9, 8,0,5, 4,0,0],
+                 [0,7,0, 0,0,0, 0,2,0],
+                 [0,5,0, 0,7,1, 0,8,0]]
 s = SudokuState.new(basic_solvable)
 pp s.basic_solve
+
+s = SudokuState.new(adv_solvable)
+
+PerfTools::CpuProfiler.start("tmp/sudoku_profile") do
+  solved = s.spec_solve
+end
+
+pp solved
